@@ -1,18 +1,32 @@
+import { BrowserWorker } from "@cloudflare/puppeteer";
+
+import { Browser } from "./browser";
+export { Browser };
+
+export interface Env {
+  CRAWLER_PAGE_CACHE: KVNamespace;
+  CRAWLER_BROWSER: BrowserWorker;
+	BROWSER: DurableObjectNamespace;
+}
+
 /**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Bind resources to your worker in `wrangler.toml`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
- * Learn more at https://developers.cloudflare.com/workers/
+ * Source code:
+ * https://developers.cloudflare.com/browser-rendering/get-started/browser-rendering-with-do/
  */
 
 export default {
-	async fetch(request, env, ctx): Promise<Response> {
-		return new Response('Hello World!');
-	},
-} satisfies ExportedHandler<Env>;
+  async fetch(req: Request, env: Env): Promise<Response> {
+		const urlParams = new URL(req.url).searchParams;
+		const url = urlParams.get("url");
+		if (!url) return new Response("No URL provided.", { status: 400 });
+
+		const json = await env.CRAWLER_PAGE_CACHE.get(url, "json");
+		if (json) return Response.json(json);
+
+		let id = env.BROWSER.idFromName("browser");
+    let obj = env.BROWSER.get(id);
+	
+		let resp = obj.fetch(req);
+		return resp;
+  }
+};

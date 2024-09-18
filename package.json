@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "dom-to-semantic-markdown": "^1.2.11",
-    "linkedom": "^0.18.4"
+    "linkedom": "^0.18.4",
+    "puppeteer-cluster": "^0.24.0"
   }
 }

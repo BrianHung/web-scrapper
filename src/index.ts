@@ -26,7 +26,7 @@ export default {
 		let id = env.BROWSER.idFromName("browser");
     let obj = env.BROWSER.get(id);
 	
-		let resp = obj.fetch(req);
+		let resp = await obj.fetch(req);
 		return resp;
   }
 };

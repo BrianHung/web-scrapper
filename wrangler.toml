@@ -2,7 +2,7 @@
 name = "web-scrapper"
 main = "src/index.ts"
 compatibility_date = "2024-08-21"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat_v2"]
 
 browser = { binding = "CRAWLER_BROWSER" }
 

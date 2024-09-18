@@ -15,6 +15,8 @@ export interface Env {
  */
 
 export default {
+	// TODO: Emit updates with streams
+	// https://developers.cloudflare.com/workers/examples/openai-sdk-streaming/ 
   async fetch(req: Request, env: Env): Promise<Response> {
 		const urlParams = new URL(req.url).searchParams;
 		const url = urlParams.get("url");

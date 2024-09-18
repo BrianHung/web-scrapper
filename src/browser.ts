@@ -54,6 +54,22 @@ export class Browser {
     // Reset keptAlive after each call to the DO
     this.keptAliveInSeconds = 0;
 
+    const pageResult = this.crawl(req);
+
+    // Reset keptAlive after performing tasks to the DO.
+    this.keptAliveInSeconds = 0;
+
+    // set the first alarm to keep DO alive
+    let currentAlarm = await this.storage.getAlarm();
+    if (currentAlarm == null) {
+      const TEN_SECONDS = 10 * 1000;
+      await this.storage.setAlarm(Date.now() + TEN_SECONDS);
+    }
+
+    return Response.json(pageResult);
+  }
+
+  async crawl(req: Request) {
     const cluster = await Cluster.launch({
       concurrency: Cluster.CONCURRENCY_PAGE,
       maxConcurrency: 2,
@@ -75,16 +91,6 @@ export class Browser {
 
     cluster.queue(url, scrapeWebPage);
     await cluster.idle();
-
-    // Reset keptAlive after performing tasks to the DO.
-    this.keptAliveInSeconds = 0;
-
-    // set the first alarm to keep DO alive
-    let currentAlarm = await this.storage.getAlarm();
-    if (currentAlarm == null) {
-      const TEN_SECONDS = 10 * 1000;
-      await this.storage.setAlarm(Date.now() + TEN_SECONDS);
-    }
 
     return Response.json(pageResult);
   }
@@ -110,26 +116,6 @@ export class Browser {
   }
 
   async search(req: Request) {
-    if (!this.browser || !this.browser.isConnected()) {
-      console.log(`Browser DO: Starting new instance`);
-      try {
-        this.browser = await puppeteer.launch(this.env.CRAWLER_BROWSER);
-      } catch (e) {
-        console.log(
-          `Browser DO: Could not start browser instance. Error: ${e}`,
-        );
-
-        return new Response(
-        JSON.stringify({ error: "Could not start browser instance." }), {
-          status: 500,
-          headers: { "Content-Type": "application/json" },
-        })
-      }
-    }
-
-    // Reset keptAlive after each call to the DO
-    this.keptAliveInSeconds = 0;
-
     const cluster = await Cluster.launch({
       concurrency: Cluster.CONCURRENCY_PAGE,
       maxConcurrency: 5,
@@ -172,16 +158,6 @@ export class Browser {
     const pageResult = {
       query: "top restaurants chicago",
       results: linkResults,
-    }
-
-    // Reset keptAlive after performing tasks to the DO.
-    this.keptAliveInSeconds = 0;
-
-    // set the first alarm to keep DO alive
-    let currentAlarm = await this.storage.getAlarm();
-    if (currentAlarm == null) {
-      const TEN_SECONDS = 10 * 1000;
-      await this.storage.setAlarm(Date.now() + TEN_SECONDS);
     }
 
     return Response.json(pageResult);

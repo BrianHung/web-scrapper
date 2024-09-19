@@ -18,3 +18,10 @@ preview_id = "2f496917fa6248bdbbc3ca5021ca6d2d"
 [[migrations]]
 tag = "v1" # Should be unique for each entry
 new_classes = ["Browser"] # Array of new classes
+
+[ai]
+binding = "AI"
+
+[[vectorize]]
+binding = "VECTOR_INDEX"
+index_name = "vector-index"

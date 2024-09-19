@@ -1,8 +1,8 @@
-import { BrowserWorker, Page, Browser as Puppeteer } from '@cloudflare/puppeteer';
+import { BrowserWorker, Browser as Puppeteer } from '@cloudflare/puppeteer';
 import puppeteer from "@cloudflare/puppeteer";
 import { Cluster } from 'puppeteer-cluster';
-import { DOMParser, parseHTML } from "linkedom";
-import { convertHtmlToMarkdown } from 'dom-to-semantic-markdown';
+import { Ai } from "@cloudflare/workers-types"
+import { crawlPage, searchWeb, streamResponse } from './utils';
 
 const KEEP_BROWSER_ALIVE_IN_SECONDS = 60;
 const CUSTOM_USER_AGENT = 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;'
@@ -13,8 +13,9 @@ const MAX_PAGES_EMBEDDED = 8 as const;
 interface Env {
   CRAWLER_BROWSER: BrowserWorker;
   CRAWLER_PAGE_CACHE: KVNamespace;
+  VECTOR_INDEX: Vectorize;
+  AI: Ai;
 }
-
 
 export class Browser {
 
@@ -66,33 +67,7 @@ export class Browser {
       await this.storage.setAlarm(Date.now() + TEN_SECONDS);
     }
 
-    return Response.json(pageResult);
-  }
-
-  async crawl(req: Request) {
-    const cluster = await Cluster.launch({
-      concurrency: Cluster.CONCURRENCY_PAGE,
-      maxConcurrency: 2,
-      puppeteer: {
-        launch: () => this.browser
-      },
-    });
-
-    const urlParams = new URL(req.url).searchParams;
-		const url = urlParams.get("url");
-		if (!url) return new Response("No URL provided.", { status: 400 });
-
-    let pageResult;
-    const scrapeWebPage = async ({ page, data: url }) => {
-      await page.setUserAgent(CUSTOM_USER_AGENT);
-      pageResult = await crawlPage(page, url);
-      await this.env.CRAWLER_PAGE_CACHE.put(url, JSON.stringify(pageResult));
-    }
-
-    cluster.queue(url, scrapeWebPage);
-    await cluster.idle();
-
-    return Response.json(pageResult);
+    return pageResult;
   }
 
   async alarm() {
@@ -115,7 +90,63 @@ export class Browser {
     }
   }
 
+  async crawl(req: Request) {
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const textEncoder = new TextEncoder();
+
+    const cluster = await Cluster.launch({
+      concurrency: Cluster.CONCURRENCY_PAGE,
+      maxConcurrency: 2,
+      puppeteer: {
+        launch: () => this.browser
+      },
+    });
+
+    const params = new URL(req.url).searchParams;
+		const url = params.get("url");
+		if (!url) return new Response("No URL provided.", { status: 400 });
+
+    let pageResult;
+    const scrapeWebPage = async ({ page, data: url }) => {
+      await page.setUserAgent(CUSTOM_USER_AGENT);
+      pageResult = await crawlPage(page, url);
+      await this.env.CRAWLER_PAGE_CACHE.put(url, JSON.stringify(pageResult));
+    }
+
+    cluster.queue(url, scrapeWebPage);
+
+    if (streamResponse(req)) {
+      this.state.waitUntil((
+        async () => {
+          await cluster.idle();
+          await writer.write(
+            textEncoder.encode(
+              `data: ${JSON.stringify({ message: 'scraping complete' })}\n\n`,
+            )
+          );
+          writer.close();
+        }
+      )());
+      return new Response(readable, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Transfer-Encoding": "chunked",
+          "content-encoding": "identity",
+        },
+      });
+    } else {
+      await cluster.idle();
+      return Response.json(pageResult);
+    }
+  }
+
   async search(req: Request) {
+
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const textEncoder = new TextEncoder();
+
     const cluster = await Cluster.launch({
       concurrency: Cluster.CONCURRENCY_PAGE,
       maxConcurrency: 5,
@@ -128,84 +159,101 @@ export class Browser {
       console.log(`Error crawling ${data}: ${error.message}`);
     });
 
-    const urlParams = new URL(req.url).searchParams;
-		const query = urlParams.get("query") || "top restaurants chicago";
+    const params = new URL(req.url).searchParams;
+		const query = params.get("query") || "top restaurants los angeles";
 		if (!query) return new Response("No query provided.", { status: 400 });
 
-    let linkResults: { url: string, markdown: string }[] = [];
+    let results: { url: string, markdown: string }[] = [];
 
     const crawlWebPage = async ({ page, data: url }) => {
       await page.setUserAgent(CUSTOM_USER_AGENT);
-      console.log("crawling", url)
+      await writer.write(
+        textEncoder.encode(`data: ${JSON.stringify({ message: "crawling link", link: url })}\n\n`)
+      );
       const { markdown } = await crawlPage(page, url);
-      linkResults.push({ url, markdown });
+      results.push({ url, markdown });
     }
 
     const searchWebPage = async ({ page, data: query }) => {
       await page.setUserAgent(CUSTOM_USER_AGENT);
-      console.log("searching", query)
-      const { links } = await searchWeb(page, query);
+      await writer.write(
+        textEncoder.encode(`data: ${JSON.stringify({ message: "searching web" })}\n\n`)
+      );
+      const { links: l } = await searchWeb(page, query);
+      const links = l.slice(0, MAX_PAGES_SCRAPPED);
+      await writer.write(
+        textEncoder.encode(`data: ${JSON.stringify({ message: "links found", links })}\n\n`)
+      );
       links.forEach(link => {
         cluster.queue(link, crawlWebPage)
       })
     }
 
     cluster.queue(query, searchWebPage);
-    await cluster.idle();
 
-    // TODO: Text embedding for scrapped pages to find most relevant pages.
-    // https://github.com/huggingface/chat-ui/blob/main/src/lib/server/websearch/runWebSearch.ts
-    const pageResult = {
-      query: "top restaurants chicago",
-      results: linkResults,
+    console.log("stream?", streamResponse(req))
+    if (streamResponse(req)) {
+      this.state.waitUntil((
+        async () => {
+          await cluster.idle();
+          await writer.write(
+            textEncoder.encode(
+              `data: ${JSON.stringify({ 
+                message: 'search complete', 
+                result: {
+                  query,
+                  results,
+                } 
+              })}\n\n`,
+            )
+          );
+          writer.close();
+        }
+      )());
+      return new Response(readable, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Transfer-Encoding": "chunked",
+          "content-encoding": "identity",
+        },
+      });
+    } else {
+      await cluster.idle();
+      return Response.json({
+        query,
+        results,
+      });
     }
+  }
 
-    return Response.json(pageResult);
+  async embed(webpages: { url: string, content: string }[]) {
+    const { data: embeddings } = await this.env.AI.run("@cf/baai/bge-large-en-v1.5", {
+      text: webpages.map(page => page.content),
+    });
+
+    const vectors = webpages.map((page, i) => ({
+      id: page.url,
+      values: embeddings[i],
+      metadata: {
+        url: page.url,
+      }
+    }));
+
+    return this.env.VECTOR_INDEX.upsert(vectors);
+  }
+
+  async query(query: string) {
+    const { data: embeddings } = await this.env.AI.run("@cf/baai/bge-base-en-v1.5",{
+      text: query,
+    });
+
+    const nearest = await this.env.VECTOR_INDEX.query(embeddings[0], {
+      topK: MAX_PAGES_EMBEDDED,
+      returnValues: false,
+      returnMetadata: true,
+    })
+
+    const urls: string[] = nearest.matches.map(match => (match.metadata as any).url);
+    return urls;
   }
 }
-
-export const crawlPage = async (page: Page, url: string) => {
-  await page.goto(url, {
-    waitUntil: "load",
-  });
-
-  const html = await page.content();
-  const markdown = convertHtmlToMarkdown(html, { overrideDOMParser: new DOMParser() });
-  
-  return {
-    markdown,
-  };
-};
-
-export function isURL(url: string) {
-	try {
-		new URL(url);
-		return true;
-	} catch (e) {
-		return false;
-	}
-}
-
-export const searchWeb = async (page: Page, query: string) => {
-  const url = "https://www.google.com/search?hl=en&q=" + encodeURIComponent(query);
-
-  await page.goto(url, {
-    waitUntil: "load",
-  });
-
-  const html = await page.content();
-  const { document } = parseHTML(html);
-
-  const links = document.querySelectorAll("a");
-	if (!links.length) throw new Error(`webpage doesn't have any "a" element`);
-
-	const linksHref: string[] = Array.from(links)
-		.map((el) => el.href)
-		.filter((link) => link.startsWith("/url?q=") && !link.includes("google.com/"))
-		.map((link) => link.slice("/url?q=".length, link.indexOf("&sa=")))
-		.filter(isURL);
-
-  return {
-    links: [...new Set(linksHref)].slice(0, MAX_PAGES_SCRAPPED),
-  };
-};
